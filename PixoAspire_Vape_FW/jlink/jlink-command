@@ -1,0 +1,5 @@
+power on
+erase
+loadfile build/Project.hex 0 noreset
+reset
+exit

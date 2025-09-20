@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>WebSerial Sender (With Rotation)</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            padding: 20px;
+            max-width: 800px;
+            margin: auto;
+            background-color: #121212;
+            color: #e0e0e0;
+        }
+
+        button {
+            padding: 10px;
+            margin: 5px;
+            font-size: 1em;
+            background-color: #333;
+            color: #e0e0e0;
+            border: 1px solid #555;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        button:disabled {
+            background-color: #222;
+            color: #777;
+            cursor: not-allowed;
+        }
+
+        button:hover:not(:disabled) {
+            background-color: #444;
+        }
+
+
+        #controls button {
+            min-width: 150px;
+        }
+
+        #rotation-controls {
+            margin-top: 15px;
+            padding: 10px;
+            border: 1px solid #444;
+            border-radius: 5px;
+            background-color: #1e1e1e;
+        }
+
+        #rotation-controls label {
+            margin-right: 15px;
+            cursor: pointer;
+        }
+
+
+        #log {
+            border: 1px solid #444;
+            padding: 10px;
+            height: 200px;
+            overflow-y: scroll;
+            margin-top: 10px;
+            background-color: #1e1e1e;
+            color: #ccc;
+        }
+
+        canvas {
+            border: 2px solid #555;
+            margin-top: 15px;
+            background-color: #000;
+        }
+
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+            text-align: center;
+            font-weight: bold;
+        }
+
+        .status.connected {
+            background-color: #1a3a24;
+            color: #6ee391;
+        }
+
+        .status.recovering {
+            background-color: #383d41;
+            color: #e2e3e5;
+        }
+
+        .status.disconnected {
+            background-color: #442023;
+            color: #f89fa6;
+        }
+
+        .status.connecting {
+            background-color: #4d4122;
+            color: #ffe8a1;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>WebSerial Sender (With Rotation)</h1>
+    <p>
+        Instantly restores the serial connection at the first sign of a problem without interrupting the screen share.
+    </p>
+
+    <div id="status" class="status disconnected">Status: Disconnected</div>
+    <div id="controls">
+        <button id="manualConnectButton">1. Connect to Device</button>
+        <button id="startShareButton" disabled>2. Start Screen Share</button>
+        <button id="stopButton" disabled>Stop</button>
+    </div>
+
+    <div id="rotation-controls">
+        <strong>Rotation:</strong>
+        <label><input type="radio" name="rotation" value="0" checked> 0°</label>
+        <label><input type="radio" name="rotation" value="90"> 90°</label>
+        <label><input type="radio" name="rotation" value="180"> 180°</label>
+        <label><input type="radio" name="rotation" value="270"> 270°</label>
+    </div>
+
+
+    <h3>Preview (sent to device):</h3>
+    <canvas id="previewCanvas" width="173" height="323"></canvas>
+    
+    <!-- NEUER BUTTON -->
+    <div>
+        <button id="saveHeaderButton">Save as .h File</button>
+    </div>
+
+    <video id="videoElement" autoplay muted playsinline style="display: none;"></video>
+
+    <h3>Log:</h3>
+    <div id="log"></div>
+    <script>
+        const CHUNK_SIZE = 4096;
+        const ACK_TIMEOUT_MS = 30;
+        const IMAGE_HEADER = new Uint8Array([0xDE, 0xAD, 0xBE, 0xEF]);
+        const MAX_ACK_FAILURES = 1;
+        const RECOVERY_ATTEMPT_INTERVAL_MS = 2000;
+
+        const manualConnectButton = document.getElementById('manualConnectButton');
+        const startShareButton = document.getElementById('startShareButton');
+        const stopButton = document.getElementById('stopButton');
+        const statusDiv = document.getElementById('status');
+        const log = document.getElementById('log');
+        const canvas = document.getElementById('previewCanvas');
+        const ctx = canvas.getContext('2d');
+        const videoElement = document.getElementById('videoElement');
+        const rotationControls = document.querySelectorAll('input[name="rotation"]');
+        
+        // NEUEN BUTTON REFERENZIEREN
+        const saveHeaderButton = document.getElementById('saveHeaderButton');
+
+        let CANVAS_WIDTH, CANVAS_HEIGHT;
+        let port, writer, reader;
+        let reconnectIntervalId = null;
+        let isSending = false;
+        let isConnecting = false;
+        let isRecovering = false;
+        let isStreaming = false;
+        let isClockRunning = false;
+        let screenStream = null;
+        let ackFailureCount = 0;
+        let currentRotation = 0;
+
+        function drawOverlayText() {
+            ctx.fillStyle = 'red';
+            ctx.font = 'bold 20px sans-serif';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'top';
+            ctx.fillText('ATC1441', 44, 5);
+        }
+
+        function drawClock() {
+            ctx.save();
+            ctx.translate(CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2);
+            ctx.rotate(currentRotation * Math.PI / 180);
+            ctx.fillStyle = 'black';
+            ctx.fillRect(-CANVAS_WIDTH / 2, -CANVAS_HEIGHT / 2, CANVAS_WIDTH, CANVAS_HEIGHT);
+            const now = new Date();
+            const timeString = now.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+            const secondString = now.toLocaleTimeString('de-DE', { second: '2-digit' });
+
+            ctx.fillStyle = 'white';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            if (currentRotation === 90 || currentRotation === 270) {
+                ctx.font = '40px sans-serif';
+                ctx.fillText(timeString, 0, -15);
+                ctx.font = '25px sans-serif';
+                ctx.fillText(secondString, 0, 25);
+            } else {
+                ctx.font = '50px sans-serif';
+                ctx.fillText(timeString, 0, -20);
+                ctx.font = '30px sans-serif';
+                ctx.fillText(secondString, 0, 30);
+            }
+            ctx.restore();
+            drawOverlayText();
+        }
+
+        function startClock() {
+            if (isClockRunning || isStreaming) return;
+            isClockRunning = true;
+            logMessage('Starting clock transmission.');
+            sendClockFrame();
+        }
+
+        function stopClock() {
+            if (isClockRunning) {
+                isClockRunning = false;
+                logMessage('Stopping clock transmission.');
+            }
+        }
+
+        function drawFrameOnCanvas() {
+            if (videoElement.srcObject) {
+                ctx.save();
+                ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+                ctx.translate(CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2);
+                ctx.rotate(currentRotation * Math.PI / 180);
+                if (currentRotation === 90 || currentRotation === 270) {
+                    ctx.drawImage(videoElement, -CANVAS_HEIGHT / 2, -CANVAS_WIDTH / 2, CANVAS_HEIGHT, CANVAS_WIDTH);
+                } else {
+                    ctx.drawImage(videoElement, -CANVAS_WIDTH / 2, -CANVAS_HEIGHT / 2, CANVAS_WIDTH, CANVAS_HEIGHT);
+                }
+                ctx.restore();
+                drawOverlayText();
+            }
+        }
+
+        async function sendCanvasData() {
+            const imageData = ctx.getImageData(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+            const rgbaData = imageData.data;
+            const rgb332Buffer = new Uint8Array(CANVAS_WIDTH * CANVAS_HEIGHT);
+            for (let i = 0, j = 0; i < rgbaData.length; i += 4, j++) {
+                const r = rgbaData[i] >> 5;
+                const g = rgbaData[i + 1] >> 5;
+                const b = rgbaData[i + 2] >> 6;
+                rgb332Buffer[j] = (r << 5) | (g << 2) | b;
+            }
+            await writer.write(IMAGE_HEADER);
+            if (!await waitForAck()) { return false; }
+            for (let bytesSent = 0; bytesSent < rgb332Buffer.byteLength; bytesSent += CHUNK_SIZE) {
+                const end = Math.min(bytesSent + CHUNK_SIZE, rgb332Buffer.byteLength);
+                const chunk = rgb332Buffer.slice(bytesSent, end);
+                await writer.write(chunk);
+                if (!await waitForAck()) { return false; }
+            }
+            return true;
+        }
+
+        rotationControls.forEach(radio => {
+            radio.addEventListener('change', (event) => {
+                currentRotation = parseInt(event.target.value, 10);
+                logMessage(`Rotation set to ${currentRotation}°.`);
+                if (isClockRunning && !isSending) {
+                    drawClock();
+                }
+            });
+        });
+
+        function logMessage(message, type = 'info') {
+            const color = type === 'error' ? '#ff6b6b' : '#a0a0a0';
+            log.innerHTML += `<span style="color: ${color};">${new Date().toLocaleTimeString()}: ${message}</span><br>`;
+            log.scrollTop = log.scrollHeight;
+        }
+        function updateStatus(state, message) { statusDiv.className = `status ${state}`; statusDiv.textContent = `Status: ${message}`; }
+
+        async function connectToPort(portToConnect) {
+            if (isConnecting || port) return false;
+            isConnecting = true;
+            updateStatus('connecting', 'Connecting...');
+            try {
+                await portToConnect.open({ baudRate: 2000000 });
+                port = portToConnect;
+                writer = port.writable.getWriter();
+                reader = port.readable.getReader();
+                ackFailureCount = 0;
+                stopReconnectRoutine();
+                updateStatus('connected', 'Connected');
+                logMessage('Device connected successfully.');
+                manualConnectButton.textContent = 'Disconnect';
+                startShareButton.disabled = false;
+                isConnecting = false;
+                return true;
+            } catch (error) {
+                logMessage(`Error connecting: ${error.message}`, 'error');
+                port = null; writer = null; reader = null; isConnecting = false;
+                return false;
+            }
+        }
+
+        async function recoverConnection() {
+            if (isRecovering) return;
+            isRecovering = true;
+            ackFailureCount = 0;
+
+            logMessage('Connection problem detected. Starting immediate recovery...', 'error');
+            updateStatus('recovering', 'Recovering connection...');
+
+            if (reader) { await reader.cancel().catch(() => { }); reader = null; }
+            if (writer) { await writer.close().catch(() => { }); writer = null; }
+            if (port) { await port.close().catch(() => { }); port = null; }
+
+            while (!port && (isStreaming || isClockRunning)) {
+                logMessage('Searching for port to recover...');
+                const connected = await attemptAutoConnect();
+                if (!connected) {
+                    await new Promise(resolve => setTimeout(resolve, RECOVERY_ATTEMPT_INTERVAL_MS));
+                }
+            }
+
+            if (port) {
+                logMessage('Recovery successful. Resuming transmission.', 'info');
+                isRecovering = false;
+                if (isStreaming) {
+                    requestAnimationFrame(sendFrame);
+                } else if (isClockRunning) {
+                    sendClockFrame();
+                }
+            } else {
+                logMessage('Recovery aborted as the transmission was stopped.', 'info');
+                isRecovering = false;
+            }
+        }
+
+        async function handleHardDisconnect() {
+            stopReconnectRoutine();
+            stopStreaming();
+            stopClock();
+            if (reader) { await reader.cancel().catch(() => { }); reader = null; }
+            if (writer) { await writer.close().catch(() => { }); writer = null; }
+            if (port) { await port.close().catch(() => { }); port = null; }
+            updateStatus('disconnected', 'Disconnected. Searching automatically...');
+            logMessage('Connection manually disconnected. Starting reconnection routine.', 'info');
+            startShareButton.disabled = true;
+            manualConnectButton.textContent = '1. Connect to Device';
+            reconnectIntervalId = setInterval(async () => {
+                const connected = await attemptAutoConnect();
+                if (connected) startClock();
+            }, 1000);
+        }
+
+        async function attemptAutoConnect() {
+            const availablePorts = await navigator.serial.getPorts();
+            if (availablePorts.length > 0) {
+                return await connectToPort(availablePorts[0]);
+            }
+            return false;
+        }
+
+        function stopReconnectRoutine() { if (reconnectIntervalId) { clearInterval(reconnectIntervalId); reconnectIntervalId = null; logMessage('Reconnection routine stopped.'); } }
+
+        async function waitForAck() {
+            if (!reader) return false;
+            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('ACK Timeout')), ACK_TIMEOUT_MS));
+            try {
+                const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+                if (done) { throw new Error('Serial connection closed unexpectedly.'); }
+                ackFailureCount = 0;
+                return true;
+            } catch (error) {
+                if (error.message === 'ACK Timeout') {
+                    ackFailureCount++;
+                    logMessage(`ACK Timeout. Failure ${ackFailureCount}/${MAX_ACK_FAILURES}.`, 'error');
+                    if (ackFailureCount >= MAX_ACK_FAILURES) {
+                        throw new Error(`Connection lost: ${MAX_ACK_FAILURES} consecutive ACK timeout(s).`);
+                    }
+                    return false;
+                } else {
+                    throw error;
+                }
+            }
+        }
+
+        async function startScreenCapture() {
+            if (!port) { logMessage('Please connect to a serial device first.', 'error'); return; }
+            if (screenStream) { return; }
+            try {
+                stopClock();
+                screenStream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 60 } });
+                screenStream.getVideoTracks()[0].onended = () => { logMessage('Screen share was terminated by the user.'); stopStreaming(); };
+                videoElement.srcObject = screenStream;
+                await videoElement.play();
+                startStreaming();
+            } catch (error) {
+                logMessage(`Error starting screen share: ${error.message}`, 'error');
+                screenStream = null;
+                if (port) startClock();
+            }
+        }
+
+        function startStreaming() {
+            if (isStreaming) return;
+            stopClock();
+            isStreaming = true;
+            startShareButton.disabled = true;
+            stopButton.disabled = false;
+            logMessage('Screen share started. Starting transmission...');
+            requestAnimationFrame(sendFrame);
+        }
+
+        function stopStreaming() {
+            if (!isStreaming && !screenStream) return;
+            isStreaming = false;
+            if (screenStream) {
+                screenStream.getTracks().forEach(track => track.stop());
+                screenStream = null;
+                videoElement.srcObject = null;
+                logMessage('Screen share and transmission stopped.');
+            }
+            stopButton.disabled = true;
+            if (port) {
+                startShareButton.disabled = false;
+                startClock();
+            }
+        }
+
+        async function sendFrame() {
+            if (!isStreaming || isSending || isRecovering) return;
+            isSending = true;
+            try {
+                drawFrameOnCanvas();
+                await sendCanvasData();
+            } catch (error) {
+                logMessage(`Transmission error (Stream): ${error.message}`, 'error');
+                await recoverConnection();
+            } finally {
+                isSending = false;
+                if (isStreaming && !isRecovering) {
+                    setTimeout(() => requestAnimationFrame(sendFrame), 50);
+                }
+            }
+        }
+
+        async function sendClockFrame() {
+            if (!isClockRunning || isSending || isRecovering) return;
+            isSending = true;
+            try {
+                drawClock();
+                await sendCanvasData();
+            } catch (error) {
+                logMessage(`Transmission error (Clock): ${error.message}`, 'error');
+                await recoverConnection();
+            } finally {
+                isSending = false;
+                if (isClockRunning && !isRecovering) {
+                    setTimeout(sendClockFrame, 1000);
+                }
+            }
+        }
+
+        manualConnectButton.addEventListener('click', async () => {
+            if (port) {
+                await handleHardDisconnect();
+            } else {
+                try {
+                    const requestedPort = await navigator.serial.requestPort();
+                    const connected = await connectToPort(requestedPort);
+                    if (connected) startClock();
+                } catch (error) {
+                    logMessage(`User canceled the port selection.`);
+                }
+            }
+        });
+
+        startShareButton.addEventListener('click', startScreenCapture);
+        stopButton.addEventListener('click', stopStreaming);
+
+        function saveAsCHeader() {
+            logMessage('Generating C header file...');
+            const imageData = ctx.getImageData(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+            const rgbaData = imageData.data;
+            const rgb565Buffer = new Uint8Array(CANVAS_WIDTH * CANVAS_HEIGHT * 2);
+
+            for (let i = 0, j = 0; i < rgbaData.length; i += 4, j += 2) {
+                const r = rgbaData[i] >> 3;     
+                const g = rgbaData[i + 1] >> 2;
+                const b = rgbaData[i + 2] >> 3; 
+
+                const rgb565 = ~((r << 11) | (g << 5) | b);
+                rgb565Buffer[j] = (rgb565 >> 8) & 0xFF;
+                rgb565Buffer[j + 1] = rgb565 & 0xFF;
+            }
+
+            let hexString = '';
+            for (let i = 0; i < rgb565Buffer.length; i++) {
+                if (i > 0) {
+                    hexString += ', ';
+                }
+                if (i % 16 === 0) {
+                    hexString += '\n    ';
+                }
+                hexString += '0x' + ('00' + rgb565Buffer[i].toString(16)).slice(-2).toUpperCase();
+            }
+
+            const headerContent = 
+`#ifndef _IMAGE_H
+#define _IMAGE_H
+
+#include <stdint.h>
+
+const uint8_t image_data[${rgb565Buffer.length}] = {${hexString}
+};
+
+#endif // _IMAGE_H
+`;
+
+            const blob = new Blob([headerContent], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'image.h';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            logMessage('Header file saved as image.h');
+        }
+
+        saveHeaderButton.addEventListener('click', saveAsCHeader);
+
+        window.addEventListener('DOMContentLoaded', async () => {
+            CANVAS_WIDTH = canvas.width;
+            CANVAS_HEIGHT = canvas.height;
+            logMessage(`Canvas initialized: ${CANVAS_WIDTH} x ${CANVAS_HEIGHT}`);
+            drawClock();
+            const connected = await attemptAutoConnect();
+            if (connected) {
+                startClock();
+            } else {
+                updateStatus('disconnected', 'No known port found.');
+            }
+        });
+    </script>
+</body>
+
+</html>

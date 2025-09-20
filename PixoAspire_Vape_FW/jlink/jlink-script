@@ -1,0 +1,10 @@
+int InitEMU(void) {
+  JLINK_SYS_Report("--InitEMU()--");
+  JLINK_ExecCommand("SuppressInfoUpdateFW");
+  JLINK_ExecCommand("DisableAutoUpdateFW");
+  return 0;
+}
+int ConfigTargetSettings(void) {
+  JLINK_SYS_Report("--ConfigTargetSettings()--");
+  return 0;
+}
