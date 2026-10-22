@@ -1,0 +1,14 @@
+# Reviewed parts of the engine's own menu screens (tests/host/screentest.py, own): the
+# frames were looked at, then their hashes noted here. A change of these screens is
+# reviewed again and the hashes replaced.
+#
+# name, the part x0 x1 y0 y1 (screen columns and rows, inclusive), FNV-1a 64 of its palette
+# indices row by row
+nonightmare  16 267  12 143  498c9c6d89f4cfd7  # Nightmare answered y: the note on the panel
+options      56 267  69 143  8913f7f4a3506b8b  # the options' rows 2-4: sound low, USB drive, benchmark
+soundhigh    56 267  69 143  509a444c151d69c9  # sound high
+soundoff     56 267  69 143  d13f4c9dd5cc61af  # sound off
+usb          16 267  12 143  de136a7e73e56732  # the USB drive prompt
+bench        28 239  12 143  135da8a52ab918b3  # the benchmark prompt
+nosave       42 277  16 143  e8fccbe5d81305f0  # Load Game with an unusable SAVE.DAT, over the attract demo
+loadsaved    72 279  28 117  f5944583fbf5755a  # Load Game after the save of the menu workload: E1M1 0:03

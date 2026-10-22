@@ -1,0 +1,39 @@
+{
+  "comment": "Default RAM layout of the firmware for the plans of tools/conv/plan.py. A build/ram_layout.json with the same keys takes its place when it exists.",
+  "ram_total": 32768,
+  "stack": 2048,
+  "fixed_core": 5216,
+  "plans": {
+    "A": {"w": 16, "k": 4, "textured": true, "frame_region": 15208},
+    "B": {"w": 8, "k": 4, "textured": true, "frame_region": 9648},
+    "C": {"w": 8, "k": 3, "textured": true, "frame_region": 9648},
+    "D": {"w": 8, "k": 0, "textured": false, "frame_region": 8368}
+  },
+  "map_cache_lines": 128,
+  "map_cache_bytes": 2336,
+  "flat_slot_bytes": 1028,
+  "page_bytes": 60,
+  "reserve_pages": 8,
+  "transients": 24,
+  "awake_min": 24,
+  "awake_percent": 30,
+  "level_fixed": {
+    "sector_bytes": 1,
+    "mutable_bytes": 10,
+    "line_bits": 2,
+    "special_bits": 1,
+    "switch_bytes": 16,
+    "button_bytes": 128,
+    "tier_bits": 2,
+    "sleep_bytes": 1,
+    "monster_bits": 1,
+    "zclip_bytes": 4,
+    "blockmap_hash_bytes": 256,
+    "sector_hash_bytes": 128,
+    "light_bytes": 8,
+    "mover_bytes": 20,
+    "mover_max": 32,
+    "platlist_bytes": 60,
+    "drop_bytes": 16
+  }
+}

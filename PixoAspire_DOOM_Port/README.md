@@ -34,6 +34,16 @@ host-side tools in `tools/`.
 
 Everything is GPL-2.0-or-later, like Doom itself.
 
+### The game data
+
+`doom1.wad` in this directory is the data the port is built from, and it is
+id Software's, not ours - the licences in `LICENSES/` and `CREDITS.md` cover
+the code. It ships here because a release has to be the same build that runs
+on the device: palette, colormap and the object and state tables are
+generated from the WAD and end up inside the firmware, so a different WAD is
+a different binary. Building against Freedoom instead works and is one
+`IWAD=` away.
+
 ## The hardware, and what it means
 
 | | |
@@ -174,42 +184,109 @@ That the data really is Doom's episode 1 is not read off a photograph but
 out of RAM: the player starts at **(1056, −3616) facing 90°**, which is
 E1M1's player-1 start, exact to the unit.
 
+## What is in here
+
+The complete tree, ready to build. `engine/`, `port/`, `tools/conv/` and the
+rest are
+[DMC100-Doom](https://github.com/ArturBieniek4/DMC100-Doom) by Artur Bieniek;
+what this port adds is `platform/py32/`, `platform/link/py32_*.ld`,
+`mk/py32.mk` and `tools/vape/`.
+
+| | |
+|---|---|
+| `engine/`, `port/` | the Doom engine and the DMC-100 port of it |
+| `platform/py32/` | **this port**: panel, SPI pump, NOR, touch, startup |
+| `platform/link/py32_*.ld` | **this port**: memory map |
+| `mk/py32.mk` | **this port**: build rules |
+| `tools/vape/` | **this port**: flashing and measuring over SWD |
+| `tools/conv/` | the WAD converter |
+| `oracle/`, `tests/`, `host/` | upstream's test harness, kept so the tree builds and tests as it did |
+| `prebuilt/` | the firmware image, for looking rather than building |
+| `doom1.wad` | the game data the port is built from |
+
+### Changes to DMC100-Doom
+
+Three files of the upstream tree are modified; `tools/vape/patch_upstream.py`
+applies and reverts exactly these, and documents why:
+
+* `port/ovl/ovl.h` — overlay tables are plain arrays under `PLAT_HOST` only.
+  This build is fully resident and needs the same shape without being a host
+  build, hence `OVL_RESIDENT`.
+* `port/data/cache.h` — `#ifndef` around `RC_SETS`, so `-DRC_SETS=256`
+  reaches it. Without the guard the header wins silently and the record
+  cache stays eight times too small.
+* `tools/conv/info.py` — the object-type scan is restricted to the maps
+  actually present, so a WAD with fewer than nine E1 maps does not abort.
+
+Everything else upstream is untouched. `CREDITS.md` and `LICENSES/` are
+upstream's and still apply; `README.DMC100-Doom.md` is upstream's README.
+
 ## Building
 
-The port is the `platform/py32` layer plus build rules for
-[DMC100-Doom](https://github.com/ArturBieniek4/DMC100-Doom). Clone that,
-drop these files in, and build with clang/lld 14:
+clang/lld 14 and Python 3:
 
 ```sh
-git clone https://github.com/ArturBieniek4/DMC100-Doom dmc
-cp -r port/platform/py32   dmc/platform/
-cp    port/link/*.ld       dmc/platform/link/
-cp    port/mk/py32.mk      dmc/mk/
-python port/tools/patch_upstream.py --root dmc   # three small upstream tweaks
+sh oracle/fetch.sh    # the pinned doomgeneric checkout the converter reads
 
-cd dmc
-make -j8 BUILD=build/ud GEN=build/ud/gen IWAD=/path/to/doom1.wad CONV_PACKS=E1 packs
-make -j8 BUILD=build/ud GEN=build/ud/gen IWAD=/path/to/doom1.wad py32
+make -j$(nproc) IWAD=doom1.wad BUILD=build/ud GEN=build/ud/gen CONV_PACKS=E1 packs
+make -j$(nproc) IWAD=doom1.wad BUILD=build/ud GEN=build/ud/gen py32
+python3 -I tools/vape/mknor.py --pack build/ud/packs/E1 -o build/ud/nor.bin
 ```
 
-`patch_upstream.py` applies three things and prints what it did:
-`OVL_RESIDENT` support in `port/ovl/ovl.h` (this build has no overlays — the
-flash is two and a half times larger and an overlay would live on the NOR
-that shares its bus with the panel, so loading code would have to interrupt
-a frame); the `#ifndef` guard around `RC_SETS`; and restricting the
-converter's object-type scan to the maps actually present, so a WAD with
-fewer than nine E1 maps does not abort.
+That is what the CI runs and what produced the image on the device, down to
+the byte. Out of a clean copy of this tree:
 
-No Doom data is shipped here. Bring your own `doom1.wad`.
+```
+md5  0970f0fa2d47a2cccfb62d1c2989a2a3  build/ud/py32/DOOMVAPE.BIN   189132 B
+     193136 text, 92 data, 8448 bss
+pack E1  2937376 B of 3891136 B, one file (no DOOMX.DAT at this size)
+```
+
+The same md5 as the image that is flashed on the device, and as
+`prebuilt/DOOMVAPE.BIN`.
+
+An IWAD build needs its own `BUILD` and `GEN` branch, and that is not a
+formality: palette, colormap and the object and state tables are generated
+*from the WAD*. Firmware and data have to come from one `gen/` tree, or
+colours and object numbers do not match. The converter also writes a hash of
+the WAD into the tables and the firmware checks it against the data on the
+NOR at boot, so a mismatch does not run silently.
+
+Without `IWAD=` the converter fetches Freedoom 0.13.0 instead and verifies
+it against a pinned sha256. That builds and plays, but it is a different
+build: different data, different firmware, different hash.
+
+## Releases
+
+`.github/workflows/doom-port.yml` builds this on every push: toolchain,
+pinned doomgeneric checkout, data converted from Freedoom, firmware, NOR
+image, and a release with firmware, `nor.bin`, the data and the tools. The
+release carries the `llvm-size` output and a `SHA256SUMS`, so what you
+download can be checked against what was built.
+
+Nothing in a release comes out of the repository except the host tools —
+engine and data are built from source in that run.
+
+## Firmware and data belong together
+
+The converter writes a hash of the WAD it read into the generated tables,
+and the firmware checks it against the data on the NOR at boot. Palette,
+colormap and the object and state lists come out of the WAD too, so a
+firmware built from Freedoom does not run on data converted from a
+different WAD. Build both from the same `gen/` tree, or take both out of the
+same release.
 
 ## Flashing
 
+The external flash once, the firmware whenever it changes:
+
 ```sh
-python tools/mknor.py --doom out/DOOM.DAT --doomx out/DOOMX.DAT -o out/nor.bin
-python tools/checknor.py out/nor.bin        # check the image without hardware
-python ../PixoAspire_Vape_FW/tools/nortool.py write out/nor.bin 0   # once, ~2.5 min
-python tools/flash.py                       # the firmware
+python ../PixoAspire_Vape_FW/tools/nortool.py write build/nor.bin 0   # once, ~2.5 min
+python tools/vape/flash.py build/py32/DOOMVAPE.BIN
 ```
+
+`flash.py` finds a freshly built image by itself when called without an
+argument, and picks the only probe on the bus unless `VAPE_SN` names one.
 
 **Do not use a single `loadfile` for the firmware.** The external watchdog
 pulls NRST as soon as nothing feeds it, and `erase` takes away the firmware
@@ -222,7 +299,7 @@ vector into lockup, and the next attempt fails at the erase with
 `Cannot read register ... while CPU is running`. That is a state you do not
 get out of by trying again.
 
-`tools/flash.py` writes in **32 KiB chunks**, each with its own `r`/`h`
+`tools/vape/flash.py` writes in **32 KiB chunks**, each with its own `r`/`h`
 first. A chunk takes about a second and fits inside a watchdog window, what
 is already in flash survives the reset, and a chunk that does not land is
 repeated on its own.
@@ -240,13 +317,13 @@ there. A completely blank chip looked like a full one here, including
 
 | | |
 |---|---|
-| `tools/flash.py` | firmware, in chunks, verified |
-| `tools/mknor.py`, `checknor.py` | build and check the NOR image |
-| `tools/vapedoom.py` | debug ring over SWD, progress, state |
-| `tools/prof.py` | where a frame spends its time |
-| `tools/touch.py` | inject input and prove its effect |
-| `tools/pins.py` | watch which pin moves |
-| `tools/shot.py` | photograph the display |
+| `tools/vape/flash.py` | firmware, in chunks, verified |
+| `tools/vape/mknor.py`, `checknor.py` | build and check the NOR image |
+| `tools/vape/vapedoom.py` | debug ring over SWD, progress, state |
+| `tools/vape/prof.py` | where a frame spends its time |
+| `tools/vape/touch.py` | inject input and prove its effect |
+| `tools/vape/pins.py` | watch which pin moves |
+| `tools/vape/shot.py` | photograph the display |
 
 There is no serial port on this board and USB is the vape's own connector,
 so progress and panics go into a ring in RAM that the host reads with the

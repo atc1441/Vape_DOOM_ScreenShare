@@ -1,0 +1,219 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (C) 2026 Artur Bieniek
+//
+// DMC-100 board for Renode: AT32F415-like Cortex-M4 with 128 KB flash and 32 KB SRAM (nothing
+// else mapped near them), F1 style GPIO and SPI, a 4 MB SPI NOR on SPI1 (CS PA4) backed by
+// nor_mem, the ST7789V model on SPI2 (D/C PB12, CS PB14) and small Python models of the
+// clock unit, IOMUX, TMR4, the flash controller and the DWT cycle counter, so the board also
+// runs with "sysbus UnhandledAccessBehaviour ThrowException", and a stub of the USB controller
+// (OTGFS). Needs DMC100LCD.cs to be included first.
+// Known gaps: SPI receive DMA inside a transmit DMA transfer is dropped and 16-bit SPI frames
+// go out as one byte, so the apps are tested in their polled build.
+
+nvic: IRQControllers.NVIC @ sysbus 0xE000E000
+    priorityMask: 0xF0
+    systickFrequency: 144000000
+    IRQ -> cpu@0
+
+cpu: CPU.CortexM @ sysbus
+    cpuType: "cortex-m4"
+    nvic: nvic
+
+// Main flash, also at 0 like the boot alias of the chip, so a reset through AIRCR boots
+// the bootloader stand-in again
+flash: Memory.MappedMemory @ {
+        sysbus 0x08000000;
+        sysbus 0x00000000
+    }
+    size: 0x20000
+
+sram: Memory.MappedMemory @ sysbus 0x20000000
+    size: 0x8000
+
+// IOMUX: plain registers (the app writes the SWJTAG remap fields)
+iomux: Python.PythonPeripheral @ sysbus 0x40010000
+    size: 0x400
+    initable: true
+    script: '''
+if request.IsInit:
+    regs = {}
+elif request.IsWrite:
+    regs[request.Offset] = request.Value
+else:
+    request.Value = regs.get(request.Offset, 0)
+'''
+
+gpioPortA: GPIOPort.STM32F1GPIOPort @ sysbus <0x40010800, +0x400>
+
+gpioPortB: GPIOPort.STM32F1GPIOPort @ sysbus <0x40010C00, +0x400>
+
+gpioPortF: GPIOPort.STM32F1GPIOPort @ sysbus <0x40011C00, +0x400>
+
+// The model has no AT32 DMA_SRC_SEL registers (0xA0, 0xA4), they are plain storage
+dma1: DMA.STM32G0DMA @ sysbus <0x40020000, +0xA0>
+    numberOfChannels: 7
+    [0-6] -> nvic@[11-17]
+
+dma1_srcsel: Python.PythonPeripheral @ sysbus 0x400200A0
+    size: 0x10
+    initable: true
+    script: '''
+if request.IsInit:
+    regs = {}
+elif request.IsWrite:
+    regs[request.Offset] = request.Value
+else:
+    request.Value = regs.get(request.Offset, 0)
+'''
+
+spi1: SPI.STM32SPI @ sysbus 0x40013000
+    series: STM32Series.F4
+    IRQ -> nvic@35
+    DMAReceive -> dma1@2
+    DMASend -> dma1@3
+
+spi2: SPI.STM32SPI @ sysbus 0x40003800
+    series: STM32Series.F4
+    IRQ -> nvic@36
+    DMASend -> dma1@5
+
+// Backing store of the SPI NOR, also on the bus so tests can load and dump it
+nor_mem: Memory.MappedMemory @ sysbus 0x90000000
+    size: 0x400000
+
+spi1_mux: SPI.SPIMultiplexer @ spi1
+    init:
+        SetActiveLow 0
+
+nor: SPI.Micron_MT25Q @ spi1_mux 0x0
+    underlyingMemory: nor_mem
+
+lcd: SPI.DMC100LCD @ spi2
+
+gpioPortA:
+    4 -> spi1_mux@0
+
+gpioPortB:
+    12 -> lcd@0
+    14 -> lcd@1
+
+// Clock unit: plain registers preset to what the bootloader leaves (PLL 144 MHz, AHB and
+// both APBs undivided)
+crm: Python.PythonPeripheral @ sysbus 0x40021000
+    size: 0x400
+    initable: true
+    script: '''
+if request.IsInit:
+    regs = {0x00: 0x03037483, 0x04: 0x400F000A, 0x14: 0x14, 0x2C: 0x1F10}
+elif request.IsWrite:
+    regs[request.Offset] = request.Value
+else:
+    request.Value = regs.get(request.Offset, 0)
+'''
+
+tmr4: Python.PythonPeripheral @ sysbus 0x40000800
+    size: 0x400
+    initable: true
+    script: '''
+if request.IsInit:
+    regs = {}
+elif request.IsWrite:
+    regs[request.Offset] = request.Value
+else:
+    request.Value = regs.get(request.Offset, 0)
+'''
+
+// OTGFS: a stub that lets the firmware start its USB device and wait there. Registers keep
+// what is written, the reset register reads idle (AHB master idle, no reset or flush under
+// way), the interrupt register its reset value: no bus reset ever comes, so the device is
+// never configured.
+otgfs: Python.PythonPeripheral @ sysbus 0x50000000
+    size: 0x3000
+    initable: true
+    script: '''
+if request.IsInit:
+    regs = {}
+elif request.IsWrite:
+    regs[request.Offset] = request.Value
+elif request.Offset == 0x10:
+    request.Value = 0x80000000
+elif request.Offset == 0x14:
+    request.Value = 0x04000020
+else:
+    request.Value = regs.get(request.Offset, 0)
+'''
+
+// DWT: CYCCNT advances by 1440 per read, enough for code that waits on it
+dwt: Python.PythonPeripheral @ sysbus 0xE0001000
+    size: 0x1000
+    initable: true
+    script: '''
+if request.IsInit:
+    regs = {}
+    cyc = 0
+elif request.IsWrite:
+    if request.Offset == 4:
+        cyc = request.Value
+    else:
+        regs[request.Offset] = request.Value
+else:
+    if request.Offset == 4:
+        cyc = (cyc + 1440) & 0xFFFFFFFF
+        request.Value = cyc
+    else:
+        request.Value = regs.get(request.Offset, 0)
+'''
+
+// Flash controller: unlock keys, OPLK, 1 KB sector erase (fills the sector with 0xFF on the
+// bus). Programming is plain writes to the flash memory. Offset 0x3FC counts erases and 0x3F8
+// holds the last erased address.
+flashctl: Python.PythonPeripheral @ sysbus 0x40022000
+    size: 0x400
+    initable: true
+    script: '''
+if request.IsInit:
+    bus = emulationManager.Instance.CurrentEmulation.Machines[0].SystemBus
+    regs = {0x00: 0x34, 0x10: 0x80, 0x1C: 0x03FFFFFE, 0x20: 0xFFFFFFFF}
+    sts = 0
+    keyst = 0
+    erases = 0
+    last = 0
+elif request.IsWrite:
+    off = request.Offset
+    v = request.Value
+    if off == 0x04:
+        if keyst == 0 and v == 0x45670123:
+            keyst = 1
+        elif keyst == 1 and v == 0xCDEF89AB:
+            keyst = 0
+            regs[0x10] = regs[0x10] & ~0x80
+        else:
+            keyst = 0
+    elif off == 0x0C:
+        sts = sts & ~(v & 0x34)
+    elif off == 0x10:
+        if not (regs[0x10] & 0x80):
+            if (v & 0x42) == 0x42:
+                a = regs.get(0x14, 0) & ~0x3FF
+                erases = erases + 1
+                last = a
+                for i in range(0, 0x400, 4):
+                    bus.WriteDoubleWord(a + i, 0xFFFFFFFF)
+                sts = sts | 0x20
+                v = v & ~0x40
+            regs[0x10] = v
+        elif v & 0x80:
+            regs[0x10] = regs[0x10] | 0x80
+    else:
+        regs[off] = v
+else:
+    off = request.Offset
+    if off == 0x0C:
+        request.Value = sts
+    elif off == 0x3FC:
+        request.Value = erases
+    elif off == 0x3F8:
+        request.Value = last
+    else:
+        request.Value = regs.get(off, 0)
+'''

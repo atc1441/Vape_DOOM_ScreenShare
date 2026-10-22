@@ -1,0 +1,131 @@
+name: DOOM port
+
+# Every push builds the firmware and the game data from scratch and publishes
+# a release with everything needed to put it on a vape.
+#
+# Nothing here comes out of the repository that was not built in this run,
+# except the host tools: the engine is compiled, the data is converted from
+# Freedoom, and the NOR image is assembled from that data. If the build is
+# green, the artifacts match the sources of that commit.
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: PixoAspire_DOOM_Port
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # clang/lld 14 is what the port is built and measured with. The
+      # makefiles call llvm-nm, llvm-objcopy and llvm-size by their plain
+      # names, so the versioned binaries get linked into a directory on PATH.
+      - name: Toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-14 lld-14 llvm-14 python3 zip
+          mkdir -p "$HOME/bin"
+          for t in clang clang++ ld.lld llvm-nm llvm-objcopy llvm-size llvm-objdump; do
+            ln -sf "/usr/bin/$t-14" "$HOME/bin/$t"
+          done
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      # The converter reads the upstream tables out of a pinned doomgeneric
+      # checkout. oracle/fetch.sh verifies the commit it got.
+      - name: Fetch the pinned doomgeneric checkout
+        run: sh oracle/fetch.sh
+
+      # Built from the IWAD in the repository, so a release is the same image
+      # that runs on the device. An IWAD build needs its own BUILD and GEN
+      # branch: palette, colormap and the object and state tables come out of
+      # the WAD, so firmware and data have to come from one gen/ tree.
+      - name: Convert the game data
+        run: make -j"$(nproc)" IWAD=doom1.wad BUILD=build/ud GEN=build/ud/gen CONV_PACKS=E1 packs
+
+      - name: Build the firmware
+        run: make -j"$(nproc)" IWAD=doom1.wad BUILD=build/ud GEN=build/ud/gen py32
+
+      # --pack reads DOOM.DAT and, when the converter split the image,
+      # DOOMX.DAT out of the pack directory. Deciding that here in the shell
+      # is how it went wrong once: the test for DOOMX.DAT quietly produced
+      # nothing and the image shipped without a third of its data.
+      - name: Assemble the NOR image
+        run: |
+          python3 -I tools/vape/mknor.py --pack build/ud/packs/E1 -o build/ud/nor.bin
+          python3 -I tools/vape/checknor.py build/ud/nor.bin
+
+      - name: Version
+        id: ver
+        run: |
+          v="v0.1.${{ github.run_number }}"
+          case "${{ github.ref }}" in refs/tags/v*) v="${{ github.ref_name }}" ;; esac
+          echo "name=$v" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Collect
+        run: |
+          out="release"
+          mkdir -p "$out/tools"
+          cp build/ud/py32/DOOMVAPE.BIN build/ud/py32/DOOMVAPE.hex "$out/"
+          cp build/ud/nor.bin "$out/"
+          cp build/ud/packs/E1/DOOM*.DAT "$out/"
+          cp tools/vape/flash.py tools/vape/vapedoom.py tools/vape/touch.py \
+             tools/vape/pins.py tools/vape/prof.py tools/vape/mknor.py \
+             tools/vape/checknor.py "$out/tools/"
+          cp README.md "$out/"
+          llvm-size build/ud/py32/DOOMVAPE.elf | tee "$out/size.txt"
+          sha256sum "$out"/*.BIN "$out"/*.hex "$out"/*.bin "$out"/*.DAT > "$out/SHA256SUMS"
+          cat "$out/SHA256SUMS"
+          (cd "$out" && zip -r "../VapeDOOM-${{ steps.ver.outputs.name }}.zip" .)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VapeDOOM-${{ steps.ver.outputs.name }}
+          path: PixoAspire_DOOM_Port/release/
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${{ steps.ver.outputs.name }}"
+          notes=$(mktemp)
+          {
+            echo "DOOM running natively on the Aspire PIXO vape."
+            echo
+            echo "Built from \`${{ steps.ver.outputs.sha }}\` on \`${{ github.ref_name }}\`."
+            echo "Game data converted from the IWAD in the repository, episode 1."
+            echo
+            echo "| file | what |"
+            echo "|---|---|"
+            echo "| \`DOOMVAPE.BIN\` / \`.hex\` | firmware for the PY32F403 |"
+            echo "| \`nor.bin\` | first 4 MiB of the external SPI flash |"
+            echo "| \`DOOM.DAT\` | converted game data |"
+            echo "| \`tools/\` | flashing and measuring tools |"
+            echo
+            echo "Flashing: write \`nor.bin\` to the external flash once, then"
+            echo "\`python tools/flash.py DOOMVAPE.BIN\` for the firmware. Do not use a"
+            echo "single \`loadfile\` - the external watchdog resets the part mid-write."
+            echo
+            echo "Engine: [DMC100-Doom](https://github.com/ArturBieniek4/DMC100-Doom) by Artur Bieniek."
+            echo "Board and bring-up: [@atc1441](https://github.com/atc1441/Vape_DOOM_ScreenShare)."
+            echo
+            echo '```'
+            cat release/size.txt
+            echo '```'
+          } > "$notes"
+          gh release create "$v" \
+            --title "VapeDOOM $v" \
+            --notes-file "$notes" \
+            $([ "${{ github.ref_name }}" = "main" ] || echo --prerelease) \
+            "VapeDOOM-$v.zip" \
+            release/DOOMVAPE.BIN release/DOOMVAPE.hex release/nor.bin \
+            release/SHA256SUMS

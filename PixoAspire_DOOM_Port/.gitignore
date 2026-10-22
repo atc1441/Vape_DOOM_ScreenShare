@@ -1,0 +1,21 @@
+/build/
+/backup/
+/gen/
+/dl/
+/oracle/src/
+*.bin
+*.img
+*.wad
+*.WAD
+# The IWAD this port is built from ships with it. The release has to be
+# the same image that runs on the device, and that means the same game
+# data - a build from different data is a different build.
+!/doom1.wad
+*.whx
+*.elf
+*.DAT
+*.dat
+*.DMC
+*.o
+*.d
+__pycache__/

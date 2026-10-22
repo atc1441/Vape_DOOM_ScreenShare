@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Copyright (C) 2026 Artur Bieniek
+#
+# Vanilla out-of-bounds patterns that normal play reaches. The engine keeps
+# them for exactness, so the sanitized host build does not report them.
+
+[array-bounds]
+# visplane top[] is read at minx-1 and maxx+1, the pad bytes of visplane_t
+fun:R_DrawPlanes
+# &ammo[am_noammo] is formed for the fist and chainsaw, never read
+fun:ST_createWidgets
+# finetangent[4096] reads finesine[0], the next table in vanilla memory
+fun:R_RenderSegLoop
+
+[address]
+# No redzones, so finesine directly follows finetangent as in vanilla
+global:finetangent
+global:finesine

@@ -32,8 +32,12 @@ rules and the host-side tools.
 
     19.8 fps, 189 KB of flash, episode 1 complete
 
-Find it in [PixoAspire_DOOM_Port](PixoAspire_DOOM_Port). No Doom data is
-shipped - bring your own `doom1.wad`.
+Find it in [PixoAspire_DOOM_Port](PixoAspire_DOOM_Port) - the complete tree,
+engine included, ready to build with clang 14 and Python 3.
+
+Every push builds it from scratch and publishes a release with the firmware,
+the NOR image, the converted data and the flashing tools - built from the
+IWAD in the tree, so a release is the same image that runs on the device.
 
 # WebTool
 
