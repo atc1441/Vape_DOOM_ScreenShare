@@ -259,10 +259,15 @@ build: different data, different firmware, different hash.
 ## Releases
 
 `.github/workflows/doom-port.yml` builds this on every push: toolchain,
-pinned doomgeneric checkout, data converted from Freedoom, firmware, NOR
-image, and a release with firmware, `nor.bin`, the data and the tools. The
-release carries the `llvm-size` output and a `SHA256SUMS`, so what you
-download can be checked against what was built.
+pinned doomgeneric checkout, data converted from the IWAD in the tree,
+firmware, NOR image, and a release with firmware, `nor.bin`, the data and
+the tools. The release carries the `llvm-size` output and a `SHA256SUMS`, so
+what you download can be checked against what was built.
+
+The release is called `v<VERSION>.<run number>` — `VERSION` in this
+directory is the part you decide, the run number the part that has to differ
+between pushes. Pushing a tag `v…` uses that name instead. A release on a
+branch other than the default one is marked as a prerelease.
 
 Nothing in a release comes out of the repository except the host tools —
 engine and data are built from source in that run.

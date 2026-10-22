@@ -89,13 +89,27 @@ jobs:
           python3 -I tools/vape/mknor.py --pack build/ud/packs/E1 -o build/ud/nor.bin
           python3 -I tools/vape/checknor.py build/ud/nor.bin
 
+      # VERSION in the tree carries the part you decide, the run number the
+      # part that has to differ between pushes. A tag overrides both.
       - name: Version
         id: ver
         run: |
-          v="v0.1.${{ github.run_number }}"
-          case "${{ github.ref }}" in refs/tags/v*) v="${{ github.ref_name }}" ;; esac
+          v="v$(tr -d ' \n\r' < VERSION).${{ github.run_number }}"
+          # A tag push is a release on purpose, the default branch is the
+          # published line, anything else is a prerelease. Deciding it here
+          # rather than on github.ref_name, which for a tag push is the tag
+          # and therefore never equals the branch name.
+          pre=true
+          case "${{ github.ref }}" in
+            refs/tags/v*)
+              v="${{ github.ref_name }}"; pre=false ;;
+            refs/heads/${{ github.event.repository.default_branch }})
+              pre=false ;;
+          esac
           echo "name=$v" >> "$GITHUB_OUTPUT"
+          echo "pre=$pre" >> "$GITHUB_OUTPUT"
           echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "version $v, prerelease $pre"
 
       - name: Collect
         run: |
@@ -148,10 +162,22 @@ jobs:
             cat release/size.txt
             echo '```'
           } > "$notes"
-          gh release create "$v" \
-            --title "VapeDOOM $v" \
-            --notes-file "$notes" \
-            $([ "${{ github.ref_name }}" = "main" ] || echo --prerelease) \
+          # A re-run of the same workflow run keeps its number, and
+          # `gh release create` refuses an existing tag. Clearing it first
+          # makes a re-run do what one expects instead of failing at the
+          # last step of a build that otherwise went through.
+          gh release delete "$v" --yes --cleanup-tag 2>/dev/null || true
+
+          # An `[ ... ] && args+=(...)` would end the step here when the
+          # test is false: the runner's bash has `set -e`, and a trailing
+          # false test is a failing command.
+          args=(--title "VapeDOOM $v" --notes-file "$notes")
+          if [ "${{ steps.ver.outputs.pre }}" = "true" ]; then
+            args+=(--prerelease)
+          fi
+          gh release create "$v" "${args[@]}" \
             "VapeDOOM-$v.zip" \
             release/DOOMVAPE.BIN release/DOOMVAPE.hex release/nor.bin \
             release/SHA256SUMS
+          gh release view "$v" --json tagName,isPrerelease,assets \
+            --jq '"released \(.tagName) prerelease=\(.isPrerelease) assets=\(.assets|length)"'
