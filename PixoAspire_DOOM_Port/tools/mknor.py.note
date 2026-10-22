@@ -1,0 +1,6 @@
+Note: nor.bin covers only the first 4 MiB of the 16 MiB flash. The addresses
+0x000000 and 0x100000 of the two FAT12 volumes are fixed in
+port/data/extents.h; keeping them saves every change to the port's data
+layer. The rest of the chip stays untouched - the vape's original content is
+still there, and it is backed up in
+Vape_DOOM_ScreenShare/Firmware_Files/External_Flash_Stock_Dump.bin.

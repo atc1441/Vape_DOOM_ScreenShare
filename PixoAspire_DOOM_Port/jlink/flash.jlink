@@ -1,0 +1,6 @@
+power on
+erase
+loadfile out_ud/DOOMVAPE.hex 0 noreset
+reset
+go
+exit
