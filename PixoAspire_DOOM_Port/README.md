@@ -6,6 +6,12 @@ flash and takes input from the touch panel.
 
 ![](../VAPE_DOOMed.jpg)
 
+This repo is made together with this explanation video:(click on the image)
+
+[https://www.youtube.com/watch?v=LNx4T7kC93w](https://www.youtube.com/watch?v=LNx4T7kC93w)
+
+[![YoutubeVideo](https://img.youtube.com/vi/LNx4T7kC93w/0.jpg)](https://www.youtube.com/watch?v=LNx4T7kC93w)
+
 ## Credit where it belongs
 
 **The engine is [DMC100-Doom](https://github.com/ArturBieniek4/DMC100-Doom)
