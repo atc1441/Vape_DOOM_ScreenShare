@@ -26,18 +26,44 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # clang/lld 14 is what the port is built and measured with. The
-      # makefiles call llvm-nm, llvm-objcopy and llvm-size by their plain
-      # names, so the versioned binaries get linked into a directory on PATH.
+      # clang/lld 14 is what the port is built and measured with. Everything
+      # here calls the tools by their plain names, so the versioned binaries
+      # are linked into a directory on PATH.
+      #
+      # Every *-14 binary, not a hand-written list: the makefiles call
+      # llvm-nm, llvm-objcopy and llvm-size, and the converter also calls
+      # llvm-dwarfdump to read the enums out of the upstream tables. A list
+      # is always one tool away from being wrong - this one was, and the
+      # build got as far as the converter before saying so.
       - name: Toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y clang-14 lld-14 llvm-14 python3 zip
           mkdir -p "$HOME/bin"
-          for t in clang clang++ ld.lld llvm-nm llvm-objcopy llvm-size llvm-objdump; do
-            ln -sf "/usr/bin/$t-14" "$HOME/bin/$t"
+          # Two places, because the packages do not agree: versioned names
+          # land in /usr/bin, unversioned ones in the llvm directory, and
+          # ld.lld only reliably exists in the latter.
+          for d in /usr/lib/llvm-14/bin; do
+            [ -d "$d" ] || continue
+            for p in "$d"/*; do
+              [ -x "$p" ] && ln -sf "$p" "$HOME/bin/$(basename "$p")"
+            done
+          done
+          for p in /usr/bin/*-14; do
+            ln -sf "$p" "$HOME/bin/$(basename "$p" -14)"
           done
           echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      # Fail here with a name rather than three steps later with a traceback.
+      - name: Check the toolchain
+        run: |
+          missing=
+          for t in clang clang++ ld.lld llvm-nm llvm-objcopy llvm-size llvm-dwarfdump; do
+            command -v "$t" >/dev/null || missing="$missing $t"
+          done
+          [ -z "$missing" ] || { echo "missing from PATH:$missing"; exit 1; }
+          clang --version | head -1
+          llvm-dwarfdump --version | head -1
 
       # The converter reads the upstream tables out of a pinned doomgeneric
       # checkout. oracle/fetch.sh verifies the commit it got.
